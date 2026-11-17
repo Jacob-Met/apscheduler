@@ -243,7 +243,13 @@ class MemoryDataStore(BaseDataStore):
         for job in self._jobs_by_id.values():
             task = self._tasks[job.task_id]
 
-            # Skip already acquired jobs (unless the acquisition lock has expired)
+            # Do not re-acquire our own job after its lease expires. The
+            # scheduler can still be running it if lease renewal was starved,
+            # and restart recovery explicitly reaps jobs held by its identity.
+            if job.acquired_by == scheduler_id:
+                continue
+
+            # Another worker's expired lease is available for takeover.
             if job.acquired_until is not None:
                 if job.acquired_until >= now:
                     continue
@@ -299,13 +305,23 @@ class MemoryDataStore(BaseDataStore):
         return jobs
 
     async def release_job(self, scheduler_id: str, job: Job, result: JobResult) -> None:
-        # Record the job result
+        # A lease may be reclaimed by another worker, or cleaned up while a
+        # previous executor is still finishing. A stale release must not
+        # remove the successor's job or overwrite its result.
+        stored_job = self._jobs_by_id.get(result.job_id)
+        if stored_job is None or (
+            stored_job.acquired_by is not None
+            and stored_job.acquired_by != scheduler_id
+        ):
+            return
+
+        # Record the job result only for the current owner
         if result.expires_at > result.finished_at:
             self._job_results[result.job_id] = result
 
         # Decrement the number of running jobs for this task
-        if job.acquired_by:
-            self._tasks[job.task_id].running_jobs -= 1
+        if stored_job.acquired_by:
+            self._tasks[stored_job.task_id].running_jobs -= 1
 
         # Delete the job
         job = self._jobs_by_id.pop(result.job_id)

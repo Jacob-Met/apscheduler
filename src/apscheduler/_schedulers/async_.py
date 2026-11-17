@@ -1154,6 +1154,16 @@ class AsyncScheduler:
                         self.identity, self.lease_duration, limit
                     )
                     for job in jobs:
+                        if job in self._running_jobs:
+                            # A lease can expire while the event loop is
+                            # starved. Re-acquiring it must never start a
+                            # second executor in this scheduler process.
+                            self.logger.warning(
+                                "Ignoring duplicate acquisition of running job %s",
+                                job.id,
+                            )
+                            continue
+
                         task = await self.data_store.get_task(job.task_id)
                         func = self._get_task_callable(task)
                         self._running_jobs.add(job)
