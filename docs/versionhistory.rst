@@ -6,6 +6,9 @@ APScheduler, see the :doc:`migration section <migration>`.
 
 **UNRELEASED**
 
+- Fixed intermittent commit failures and scheduler stalls with concurrent transactions
+  against an in-memory SQLite data store
+  (`#1032 <https://github.com/agronholm/apscheduler/issues/1032>`_; PR by @Jacob-Met)
 - **BREAKING** Switched the MongoDB data store to use the asynchronous API in
   ``pymongo`` and bumped the minimum ``pymongo`` version to v4.13.0
 - Bumped up the CBOR serializer's ``cbor2`` dependency to v6.0+

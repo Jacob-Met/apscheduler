@@ -47,6 +47,7 @@ from sqlalchemy.exc import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.future import Connection, Engine
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.schema import CreateSchema
 from sqlalchemy.sql import Executable
 from sqlalchemy.sql.ddl import DropTable
@@ -174,6 +175,7 @@ class SQLAlchemyDataStore(BaseExternalDataStore):
     _supports_update_returning: bool = attrs.field(init=False, default=False)
     _supports_tzaware_timestamps: bool = attrs.field(init=False, default=False)
     _supports_native_interval: bool = attrs.field(init=False, default=False)
+    _transaction_lock: anyio.Lock | None = attrs.field(init=False, default=None)
     _metadata: MetaData = attrs.field(init=False)
     _t_metadata: Table = attrs.field(init=False)
     _t_tasks: Table = attrs.field(init=False)
@@ -191,6 +193,15 @@ class SQLAlchemyDataStore(BaseExternalDataStore):
             self._close_on_exit = True
         else:
             self._engine = self.engine_or_url
+
+        # SQLite in-memory engines share one connection between all async tasks.
+        # Their transactions must not interleave on that connection.
+        if (
+            isinstance(self._engine, AsyncEngine)
+            and self._engine.dialect.name == "sqlite"
+            and isinstance(self._engine.pool, StaticPool)
+        ):
+            self._transaction_lock = anyio.Lock()
 
         # Generate the table definitions
         prefix = f"{self.schema}." if self.schema else ""
@@ -234,6 +245,9 @@ class SQLAlchemyDataStore(BaseExternalDataStore):
         # A shielded cancel scope is injected to the exit stack to allow finalization
         # to occur even when the surrounding cancel scope is cancelled
         async with AsyncExitStack() as exit_stack:
+            if self._transaction_lock is not None:
+                await exit_stack.enter_async_context(self._transaction_lock)
+
             if isinstance(self._engine, AsyncEngine):
                 async_cm = self._engine.begin()
                 conn = await async_cm.__aenter__()

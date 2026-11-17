@@ -956,3 +956,33 @@ class TestRepr:
         async with AsyncMongoClient() as client:
             data_store = MongoDBDataStore(client)
             assert repr(data_store) == "MongoDBDataStore(host=[('localhost', 27017)])"
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_sqlite_memory_transactions_are_serialized() -> None:
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    store = SQLAlchemyDataStore(engine)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE TABLE counter (value INTEGER NOT NULL)"))
+            await conn.execute(text("INSERT INTO counter VALUES (0)"))
+
+        async def increment() -> None:
+            async with store._begin_transaction() as conn:
+                await store._execute(
+                    conn, text("UPDATE counter SET value = value + 1 RETURNING value")
+                )
+                await anyio.sleep(0.005)
+
+        async with anyio.create_task_group() as task_group:
+            for _ in range(100):
+                task_group.start_soon(increment)
+
+        async with engine.connect() as conn:
+            result = await conn.execute(text("SELECT value FROM counter"))
+            assert result.scalar_one() == 100
+    finally:
+        await engine.dispose()
